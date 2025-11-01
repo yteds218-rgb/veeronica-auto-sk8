@@ -39,14 +39,19 @@ function VeeronicaSk8.new(player)
     self.InGraffitiZone = false
     self.BatteryPercent = 0
     self._connections = {}
+    self._staminaLoop = nil
     return self
 end
 
 function VeeronicaSk8:Destroy()
     for _,c in ipairs(self._connections) do
-        if c.Connected then c:Disconnect() end
+        if c and c.Connected then c:Disconnect() end
     end
     self._connections = {}
+    if self._staminaLoop and self._staminaLoop.Connected then
+        self._staminaLoop:Disconnect()
+        self._staminaLoop = nil
+    end
 end
 
 function VeeronicaSk8:SetGraffitiZone(state)
@@ -74,10 +79,8 @@ end
 function VeeronicaSk8:StartSk8()
     if not self.InGraffitiZone or self.IsSkating or self.Stamina <= 0 then return false end
     self.IsSkating = true
-    -- apply speed multiplier
-    self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed * CONFIG.Sk8SpeedMultiplier
-    -- reduce turn responsiveness by lowering hip/walk animation or by clamping input — simple approach: set PlatformStand to false and handle orientation in your movement system.
-    -- begin stamina loop
+    self._originalWalkSpeed = self.Humanoid.WalkSpeed or CONFIG.BaseWalkSpeed
+    self.Humanoid.WalkSpeed = (self._originalWalkSpeed or CONFIG.BaseWalkSpeed) * CONFIG.Sk8SpeedMultiplier
     self:_startStaminaLoop()
     return true
 end
@@ -85,11 +88,13 @@ end
 function VeeronicaSk8:EndSk8(reason)
     if not self.IsSkating then return end
     self.IsSkating = false
-    -- reset speed (server authoritative code may want to restore stored original speed)
-    self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
+    if self._originalWalkSpeed then
+        self.Humanoid.WalkSpeed = self._originalWalkSpeed
+    else
+        self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
+    end
 end
 
--- Visual helper: glow near a wall (adds a temporary PointLight)
 function VeeronicaSk8:_showGlowOnRoot()
     if not self.Root then return end
     local pl = Instance.new("PointLight")
@@ -99,7 +104,6 @@ function VeeronicaSk8:_showGlowOnRoot()
     Debris:AddItem(pl, CONFIG.WallGlowDuration)
 end
 
--- Simple wall detection: raycast in facing direction
 function VeeronicaSk8:_isNearWall()
     if not self.Root then return false end
     local origin = self.Root.Position
@@ -111,7 +115,6 @@ function VeeronicaSk8:_isNearWall()
     return result
 end
 
--- Attempt a Trick: should be called client-side on space press, validated server-side for real games
 function VeeronicaSk8:AttemptTrick()
     local now = tick()
     if now - self.LastTrick < CONFIG.TrickCooldown then
@@ -119,54 +122,54 @@ function VeeronicaSk8:AttemptTrick()
     end
     self.LastTrick = now
 
-    -- check near wall
     local near = self:_isNearWall()
-    -- Show glow either way briefly because user should get feedback if they attempted on nothing (per spec)
     self:_showGlowOnRoot()
 
     if not self.IsSkating then
         return false, "not_skating"
     end
 
-    -- placing trick on cooldown even if not near wall (per your spec)
     if not near then
         return false, "no_wall"
     end
 
-    -- Successful trick: restore stamina, give air control (in a real game you'd change movement state)
     self.Stamina = math.min(CONFIG.StaminaMax, self.Stamina + CONFIG.TrickStaminaGain)
-    -- temporarily boost speed while airborne (demo: set WalkSpeed higher for a short time)
     local oldSpeed = self.Humanoid.WalkSpeed
-    self.Humanoid.WalkSpeed = oldSpeed * 1.15
+    self.Humanoid.WalkSpeed = (oldSpeed or CONFIG.BaseWalkSpeed) * 1.15
     task.delay(0.6, function()
-        if self.Humanoid then
-            self.Humanoid.WalkSpeed = oldSpeed
+        if self.Humanoid and self.Humanoid.Parent then
+            if self._originalWalkSpeed then
+                self.Humanoid.WalkSpeed = self._originalWalkSpeed
+            else
+                self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
+            end
         end
     end)
-    -- trick combo
+
     self.TrickCombo = self.TrickCombo + 1
     if self.TrickCombo >= CONFIG.TrickComboNeeded then
         self.BatteryPercent = math.min(100, self.BatteryPercent + CONFIG.BatteryPerCombo)
         self.TrickCombo = 0
-        -- you can fire an event to UI here to show battery increase
     end
+
     return true, "tricked"
 end
 
--- Handle collisions (simple version: call when touched a wall or killer)
 function VeeronicaSk8:OnCrash()
     if not self.IsSkating then return end
-    -- apply damage + slowness effect
     if self.Humanoid and self.Humanoid.Health > 0 then
         self.Humanoid:TakeDamage(CONFIG.CrashDamage)
         local oldWalk = self.Humanoid.WalkSpeed
-        self.Humanoid.WalkSpeed = oldWalk * 0.5
+        self.Humanoid.WalkSpeed = (oldWalk or CONFIG.BaseWalkSpeed) * 0.5
         task.delay(CONFIG.SlownessDuration, function()
-            if self.Humanoid and self.Humanoid.Health > 0 then
-                self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
+            if self.Humanoid and self.Humanoid.Parent and self.Humanoid.Health > 0 then
+                if self._originalWalkSpeed then
+                    self.Humanoid.WalkSpeed = self._originalWalkSpeed
+                else
+                    self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
+                end
             end
         end)
     end
-    -- end skating if you want on crash
     self:EndSk8("crash")
 end
