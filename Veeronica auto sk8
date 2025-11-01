@@ -1,0 +1,172 @@
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+
+local VeeronicaSk8 = {}
+VeeronicaSk8.__index = VeeronicaSk8
+
+-- Config
+local CONFIG = {
+    BaseWalkSpeed = 16,
+    Sk8SpeedMultiplier = 1.15,
+    StaminaMax = 100,
+    StaminaDrainPerSecond = 2,         -- base drain; while skating applied 1.25x
+    StaminaSprintMultiplier = 1.25,    -- applied while skating
+    TrickStaminaGain = 10,
+    TrickCooldown = 0.9,
+    TrickComboNeeded = 3,
+    CrashDamage = 5,
+    SlownessDuration = 2.5,
+    WallCheckDistance = 4,
+    WallGlowDuration = 0.5,
+    BatteryPerCombo = 5, -- percent
+}
+
+local function safeFindRoot(character)
+    return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
+end
+
+function VeeronicaSk8.new(player)
+    local self = setmetatable({}, VeeronicaSk8)
+    self.Player = player
+    self.Character = player.Character or player.CharacterAdded:Wait()
+    self.Humanoid = self.Character:WaitForChild("Humanoid")
+    self.Root = safeFindRoot(self.Character)
+    self.Stamina = CONFIG.StaminaMax
+    self.IsSkating = false
+    self.TrickCombo = 0
+    self.LastTrick = 0
+    self.InGraffitiZone = false
+    self.BatteryPercent = 0
+    self._connections = {}
+    return self
+end
+
+function VeeronicaSk8:Destroy()
+    for _,c in ipairs(self._connections) do
+        if c.Connected then c:Disconnect() end
+    end
+    self._connections = {}
+end
+
+function VeeronicaSk8:SetGraffitiZone(state)
+    self.InGraffitiZone = state
+end
+
+function VeeronicaSk8:_startStaminaLoop()
+    if self._staminaLoop then return end
+    local last = tick()
+    self._staminaLoop = RunService.Heartbeat:Connect(function()
+        local now = tick()
+        local dt = now - last
+        last = now
+        if self.IsSkating then
+            local drain = CONFIG.StaminaDrainPerSecond * CONFIG.StaminaSprintMultiplier * dt
+            self.Stamina = math.max(0, self.Stamina - drain)
+            if self.Stamina <= 0 then
+                self:EndSk8("out_of_stamina")
+            end
+        end
+    end)
+    table.insert(self._connections, self._staminaLoop)
+end
+
+function VeeronicaSk8:StartSk8()
+    if not self.InGraffitiZone or self.IsSkating or self.Stamina <= 0 then return false end
+    self.IsSkating = true
+    -- apply speed multiplier
+    self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed * CONFIG.Sk8SpeedMultiplier
+    -- reduce turn responsiveness by lowering hip/walk animation or by clamping input — simple approach: set PlatformStand to false and handle orientation in your movement system.
+    -- begin stamina loop
+    self:_startStaminaLoop()
+    return true
+end
+
+function VeeronicaSk8:EndSk8(reason)
+    if not self.IsSkating then return end
+    self.IsSkating = false
+    -- reset speed (server authoritative code may want to restore stored original speed)
+    self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
+end
+
+-- Visual helper: glow near a wall (adds a temporary PointLight)
+function VeeronicaSk8:_showGlowOnRoot()
+    if not self.Root then return end
+    local pl = Instance.new("PointLight")
+    pl.Range = 8
+    pl.Brightness = 2
+    pl.Parent = self.Root
+    Debris:AddItem(pl, CONFIG.WallGlowDuration)
+end
+
+-- Simple wall detection: raycast in facing direction
+function VeeronicaSk8:_isNearWall()
+    if not self.Root then return false end
+    local origin = self.Root.Position
+    local lookVector = self.Root.CFrame.LookVector
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {self.Character}
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    local result = workspace:Raycast(origin, lookVector * CONFIG.WallCheckDistance, params)
+    return result
+end
+
+-- Attempt a Trick: should be called client-side on space press, validated server-side for real games
+function VeeronicaSk8:AttemptTrick()
+    local now = tick()
+    if now - self.LastTrick < CONFIG.TrickCooldown then
+        return false, "cooldown"
+    end
+    self.LastTrick = now
+
+    -- check near wall
+    local near = self:_isNearWall()
+    -- Show glow either way briefly because user should get feedback if they attempted on nothing (per spec)
+    self:_showGlowOnRoot()
+
+    if not self.IsSkating then
+        return false, "not_skating"
+    end
+
+    -- placing trick on cooldown even if not near wall (per your spec)
+    if not near then
+        return false, "no_wall"
+    end
+
+    -- Successful trick: restore stamina, give air control (in a real game you'd change movement state)
+    self.Stamina = math.min(CONFIG.StaminaMax, self.Stamina + CONFIG.TrickStaminaGain)
+    -- temporarily boost speed while airborne (demo: set WalkSpeed higher for a short time)
+    local oldSpeed = self.Humanoid.WalkSpeed
+    self.Humanoid.WalkSpeed = oldSpeed * 1.15
+    task.delay(0.6, function()
+        if self.Humanoid then
+            self.Humanoid.WalkSpeed = oldSpeed
+        end
+    end)
+    -- trick combo
+    self.TrickCombo = self.TrickCombo + 1
+    if self.TrickCombo >= CONFIG.TrickComboNeeded then
+        self.BatteryPercent = math.min(100, self.BatteryPercent + CONFIG.BatteryPerCombo)
+        self.TrickCombo = 0
+        -- you can fire an event to UI here to show battery increase
+    end
+    return true, "tricked"
+end
+
+-- Handle collisions (simple version: call when touched a wall or killer)
+function VeeronicaSk8:OnCrash()
+    if not self.IsSkating then return end
+    -- apply damage + slowness effect
+    if self.Humanoid and self.Humanoid.Health > 0 then
+        self.Humanoid:TakeDamage(CONFIG.CrashDamage)
+        local oldWalk = self.Humanoid.WalkSpeed
+        self.Humanoid.WalkSpeed = oldWalk * 0.5
+        task.delay(CONFIG.SlownessDuration, function()
+            if self.Humanoid and self.Humanoid.Health > 0 then
+                self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
+            end
+        end)
+    end
+    -- end skating if you want on crash
+    self:EndSk8("crash")
+end
