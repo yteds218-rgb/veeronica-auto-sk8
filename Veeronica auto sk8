@@ -1,175 +1,65 @@
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local Debris = game:GetService("Debris")
+-- VeeronicaSk8.lua -- Educational implementation for forsaken Roblox (raw ModuleScript)
 
-local VeeronicaSk8 = {}
-VeeronicaSk8.__index = VeeronicaSk8
+local RunService = game:GetService("RunService") local Players = game:GetService("Players") local Debris = game:GetService("Debris")
 
--- Config
-local CONFIG = {
-    BaseWalkSpeed = 16,
-    Sk8SpeedMultiplier = 1.15,
-    StaminaMax = 100,
-    StaminaDrainPerSecond = 2,         -- base drain; while skating applied 1.25x
-    StaminaSprintMultiplier = 1.25,    -- applied while skating
-    TrickStaminaGain = 10,
-    TrickCooldown = 0.9,
-    TrickComboNeeded = 3,
-    CrashDamage = 5,
-    SlownessDuration = 2.5,
-    WallCheckDistance = 4,
-    WallGlowDuration = 0.5,
-    BatteryPerCombo = 5, -- percent
-}
+local VeeronicaSk8 = {} VeeronicaSk8.__index = VeeronicaSk8
 
-local function safeFindRoot(character)
-    return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
+-- Config local CONFIG = { BaseWalkSpeed = 16, Sk8SpeedMultiplier = 1.15, StaminaMax = 100, StaminaDrainPerSecond = 2,         -- base drain; while skating applied 1.25x StaminaSprintMultiplier = 1.25,    -- applied while skating TrickStaminaGain = 10, TrickCooldown = 0.9, TrickComboNeeded = 3, CrashDamage = 5, SlownessDuration = 2.5, WallCheckDistance = 4, WallGlowDuration = 0.5, BatteryPerCombo = 5, -- percent }
+
+local function safeFindRoot(character) return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso") end
+
+function VeeronicaSk8.new(player) local self = setmetatable({}, VeeronicaSk8) self.Player = player self.Character = player.Character or player.CharacterAdded:Wait() self.Humanoid = self.Character:WaitForChild("Humanoid") self.Root = safeFindRoot(self.Character) self.Stamina = CONFIG.StaminaMax self.IsSkating = false self.TrickCombo = 0 self.LastTrick = 0 self.InGraffitiZone = false self.BatteryPercent = 0 self._connections = {} self._staminaLoop = nil return self end
+
+function VeeronicaSk8:Destroy() for _,c in ipairs(self._connections) do if c and c.Connected then c:Disconnect() end end self._connections = {} if self._staminaLoop and self._staminaLoop.Connected then self._staminaLoop:Disconnect() self._staminaLoop = nil end end
+
+function VeeronicaSk8:SetGraffitiZone(state) self.InGraffitiZone = state end
+
+function VeeronicaSk8:_startStaminaLoop() if self._staminaLoop then return end local last = tick() self._staminaLoop = RunService.Heartbeat:Connect(function() local now = tick() local dt = now - last last = now if self.IsSkating then local drain = CONFIG.StaminaDrainPerSecond * CONFIG.StaminaSprintMultiplier * dt self.Stamina = math.max(0, self.Stamina - drain) if self.Stamina <= 0 then self:EndSk8("out_of_stamina") end end end) table.insert(self._connections, self._staminaLoop) end
+
+function VeeronicaSk8:StartSk8() if not self.InGraffitiZone or self.IsSkating or self.Stamina <= 0 then return false end self.IsSkating = true self._originalWalkSpeed = self.Humanoid.WalkSpeed or CONFIG.BaseWalkSpeed self.Humanoid.WalkSpeed = (self._originalWalkSpeed or CONFIG.BaseWalkSpeed) * CONFIG.Sk8SpeedMultiplier self:_startStaminaLoop() return true end
+
+function VeeronicaSk8:EndSk8(reason) if not self.IsSkating then return end self.IsSkating = false if self._originalWalkSpeed then self.Humanoid.WalkSpeed = self._originalWalkSpeed else self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed end end
+
+function VeeronicaSk8:_showGlowOnRoot() if not self.Root then return end local pl = Instance.new("PointLight") pl.Range = 8 pl.Brightness = 2 pl.Parent = self.Root Debris:AddItem(pl, CONFIG.WallGlowDuration) end
+
+function VeeronicaSk8:_isNearWall() if not self.Root then return false end local origin = self.Root.Position local lookVector = self.Root.CFrame.LookVector local params = RaycastParams.new() params.FilterDescendantsInstances = {self.Character} params.FilterType = Enum.RaycastFilterType.Blacklist local result = workspace:Raycast(origin, lookVector * CONFIG.WallCheckDistance, params) return result end
+
+function VeeronicaSk8:AttemptTrick() local now = tick() if now - self.LastTrick < CONFIG.TrickCooldown then return false, "cooldown" end self.LastTrick = now
+
+local near = self:_isNearWall()
+self:_showGlowOnRoot()
+
+if not self.IsSkating then
+    return false, "not_skating"
 end
 
-function VeeronicaSk8.new(player)
-    local self = setmetatable({}, VeeronicaSk8)
-    self.Player = player
-    self.Character = player.Character or player.CharacterAdded:Wait()
-    self.Humanoid = self.Character:WaitForChild("Humanoid")
-    self.Root = safeFindRoot(self.Character)
-    self.Stamina = CONFIG.StaminaMax
-    self.IsSkating = false
+if not near then
+    return false, "no_wall"
+end
+
+self.Stamina = math.min(CONFIG.StaminaMax, self.Stamina + CONFIG.TrickStaminaGain)
+local oldSpeed = self.Humanoid.WalkSpeed
+self.Humanoid.WalkSpeed = (oldSpeed or CONFIG.BaseWalkSpeed) * 1.15
+task.delay(0.6, function()
+    if self.Humanoid and self.Humanoid.Parent then
+        if self._originalWalkSpeed then
+            self.Humanoid.WalkSpeed = self._originalWalkSpeed
+        else
+            self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
+        end
+    end
+end)
+
+self.TrickCombo = self.TrickCombo + 1
+if self.TrickCombo >= CONFIG.TrickComboNeeded then
+    self.BatteryPercent = math.min(100, self.BatteryPercent + CONFIG.BatteryPerCombo)
     self.TrickCombo = 0
-    self.LastTrick = 0
-    self.InGraffitiZone = false
-    self.BatteryPercent = 0
-    self._connections = {}
-    self._staminaLoop = nil
-    return self
 end
 
-function VeeronicaSk8:Destroy()
-    for _,c in ipairs(self._connections) do
-        if c and c.Connected then c:Disconnect() end
-    end
-    self._connections = {}
-    if self._staminaLoop and self._staminaLoop.Connected then
-        self._staminaLoop:Disconnect()
-        self._staminaLoop = nil
-    end
+return true, "tricked"
+
 end
 
-function VeeronicaSk8:SetGraffitiZone(state)
-    self.InGraffitiZone = state
-end
+function VeeronicaSk8:OnCrash() if not self.IsSkating then return end if self.Humanoid and self.Humanoid.Health > 0 then self.Humanoid:TakeDamage(CONFIG.CrashDamage) local oldWalk = self.Humanoid.WalkSpeed self.Humanoid.WalkSpeed = (oldWalk or CONFIG.BaseWalkSpeed) * 0.5 task.delay(CONFIG.SlownessDuration, function() if self.Humanoid and self.Humanoid.Parent and self.Humanoid.Health > 0 then if self._originalWalkSpeed then self.Humanoid.WalkSpeed = self._originalWalkSpeed else self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed end end end) end self:EndSk8("crash") end
 
-function VeeronicaSk8:_startStaminaLoop()
-    if self._staminaLoop then return end
-    local last = tick()
-    self._staminaLoop = RunService.Heartbeat:Connect(function()
-        local now = tick()
-        local dt = now - last
-        last = now
-        if self.IsSkating then
-            local drain = CONFIG.StaminaDrainPerSecond * CONFIG.StaminaSprintMultiplier * dt
-            self.Stamina = math.max(0, self.Stamina - drain)
-            if self.Stamina <= 0 then
-                self:EndSk8("out_of_stamina")
-            end
-        end
-    end)
-    table.insert(self._connections, self._staminaLoop)
-end
-
-function VeeronicaSk8:StartSk8()
-    if not self.InGraffitiZone or self.IsSkating or self.Stamina <= 0 then return false end
-    self.IsSkating = true
-    self._originalWalkSpeed = self.Humanoid.WalkSpeed or CONFIG.BaseWalkSpeed
-    self.Humanoid.WalkSpeed = (self._originalWalkSpeed or CONFIG.BaseWalkSpeed) * CONFIG.Sk8SpeedMultiplier
-    self:_startStaminaLoop()
-    return true
-end
-
-function VeeronicaSk8:EndSk8(reason)
-    if not self.IsSkating then return end
-    self.IsSkating = false
-    if self._originalWalkSpeed then
-        self.Humanoid.WalkSpeed = self._originalWalkSpeed
-    else
-        self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
-    end
-end
-
-function VeeronicaSk8:_showGlowOnRoot()
-    if not self.Root then return end
-    local pl = Instance.new("PointLight")
-    pl.Range = 8
-    pl.Brightness = 2
-    pl.Parent = self.Root
-    Debris:AddItem(pl, CONFIG.WallGlowDuration)
-end
-
-function VeeronicaSk8:_isNearWall()
-    if not self.Root then return false end
-    local origin = self.Root.Position
-    local lookVector = self.Root.CFrame.LookVector
-    local params = RaycastParams.new()
-    params.FilterDescendantsInstances = {self.Character}
-    params.FilterType = Enum.RaycastFilterType.Blacklist
-    local result = workspace:Raycast(origin, lookVector * CONFIG.WallCheckDistance, params)
-    return result
-end
-
-function VeeronicaSk8:AttemptTrick()
-    local now = tick()
-    if now - self.LastTrick < CONFIG.TrickCooldown then
-        return false, "cooldown"
-    end
-    self.LastTrick = now
-
-    local near = self:_isNearWall()
-    self:_showGlowOnRoot()
-
-    if not self.IsSkating then
-        return false, "not_skating"
-    end
-
-    if not near then
-        return false, "no_wall"
-    end
-
-    self.Stamina = math.min(CONFIG.StaminaMax, self.Stamina + CONFIG.TrickStaminaGain)
-    local oldSpeed = self.Humanoid.WalkSpeed
-    self.Humanoid.WalkSpeed = (oldSpeed or CONFIG.BaseWalkSpeed) * 1.15
-    task.delay(0.6, function()
-        if self.Humanoid and self.Humanoid.Parent then
-            if self._originalWalkSpeed then
-                self.Humanoid.WalkSpeed = self._originalWalkSpeed
-            else
-                self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
-            end
-        end
-    end)
-
-    self.TrickCombo = self.TrickCombo + 1
-    if self.TrickCombo >= CONFIG.TrickComboNeeded then
-        self.BatteryPercent = math.min(100, self.BatteryPercent + CONFIG.BatteryPerCombo)
-        self.TrickCombo = 0
-    end
-
-    return true, "tricked"
-end
-
-function VeeronicaSk8:OnCrash()
-    if not self.IsSkating then return end
-    if self.Humanoid and self.Humanoid.Health > 0 then
-        self.Humanoid:TakeDamage(CONFIG.CrashDamage)
-        local oldWalk = self.Humanoid.WalkSpeed
-        self.Humanoid.WalkSpeed = (oldWalk or CONFIG.BaseWalkSpeed) * 0.5
-        task.delay(CONFIG.SlownessDuration, function()
-            if self.Humanoid and self.Humanoid.Parent and self.Humanoid.Health > 0 then
-                if self._originalWalkSpeed then
-                    self.Humanoid.WalkSpeed = self._originalWalkSpeed
-                else
-                    self.Humanoid.WalkSpeed = CONFIG.BaseWalkSpeed
-                end
-            end
-        end)
-    end
-    self:EndSk8("crash")
-end
+return VeeronicaSk8
